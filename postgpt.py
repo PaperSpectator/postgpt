@@ -12,6 +12,8 @@ This file is the complete algorithm. Everything else is just efficiency.
 resonance is unbreakable.
 """
 
+import argparse
+import pathlib
 import os
 import math
 import random
@@ -913,6 +915,7 @@ def load_engine(corpus_path=None):
     """Load corpus, learn BPE, build metaweights, init model. Returns (tokenizer, meta, model)."""
     if corpus_path is None:
         corpus_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'postgpt.txt')
+    corpus_path = pathlib.Path(corpus_path)
 
     if not os.path.exists(corpus_path):
         print(f"ERROR: {corpus_path} not found.")
@@ -927,7 +930,8 @@ def load_engine(corpus_path=None):
     # Step 2: BPE tokenization — load saved merges if they exist
     print("\n[2] BPE tokenizer...")
     tokenizer = BPETokenizer(max_merges=1024)
-    merges_path = corpus_path.replace('.txt', '.merges')
+    #merges_path = corpus_path.replace('.txt', '.merges')
+    merges_path = corpus_path.with_suffix('.merges')
     if os.path.exists(merges_path):
         tokenizer.load(merges_path)
         token_ids = tokenizer.encode(raw_data)
@@ -987,13 +991,17 @@ def continue_phrase(prompt, tokenizer, meta, model, max_tokens=120, temperature=
 
 def main():
     import sys
+    argsp = argparse.ArgumentParser(description="Let the tokens speak for themselves.")
+    argsp.add_argument('-f', '--file', help="Use an alternate corpus")
+    argsp.add_argument('prompts', nargs='*', help='What you want to ask the file')
+    args = argsp.parse_args()
 
     print("=" * 60)
     print("  PostGPT — metaweight BPE transformer")
     print("  resonance is unbreakable")
     print("=" * 60)
 
-    tokenizer, meta, model = load_engine()
+    tokenizer, meta, model = load_engine(args.file)
     if tokenizer is None:
         return
 
@@ -1013,8 +1021,8 @@ def main():
     ]
 
     # Allow custom prompt from command line: python postgpt.py "your prompt here"
-    if len(sys.argv) > 1:
-        prompts = [' '.join(sys.argv[1:])]
+    if args.prompts:
+        prompts = [' '.join(args.prompts)]
 
     print("\n" + "=" * 60)
     print("  PROOF OF CONCEPT: phrase continuation")
