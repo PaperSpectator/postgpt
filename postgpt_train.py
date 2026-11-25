@@ -210,6 +210,11 @@ def train(args):
     print("\n[3] Initializing Chuck Optimizer (notorch)...")
     optimizer = ChuckOptimizer(lr=args.lr, max_grad_norm=1.0)
     engine = NotorchEngine(params, cfg, optimizer)
+    load_path = args.inplace or args.load
+    if load_path:
+        print(f"\n[3.5] Loading prior checkpoint {load_path}")
+        engine.load(load_path)
+        print(" Checkpoint loaded!")
 
     # Training (one sequence per step — the notorch tape is per-sequence)
     print(f"\n[4] Training for {args.steps} steps...")
@@ -252,10 +257,11 @@ def train(args):
     print(f"  Output: {text[:300]}")
 
     # Save weights (notorch binary)
-    if args.save:
+    save_path = args.inplace or args.save
+    if save_path:
         print("\n[6] Saving weights...")
-        engine.save(args.save)
-        print(f"  Weights saved to {args.save} ({os.path.getsize(args.save) / 1024:.1f} KB)")
+        engine.save(save_path)
+        print(f"  Weights saved to {save_path} ({os.path.getsize(save_path) / 1024:.1f} KB)")
 
     print("\n" + "=" * 60)
     print("  Training complete. Chuck is satisfied. No torch was harmed.")
@@ -274,7 +280,9 @@ def main():
     parser.add_argument('--n_content', type=int, default=2, help='Content attention heads')
     parser.add_argument('--n_rrpram', type=int, default=2, help='RRPRAM attention heads')
     parser.add_argument('--lr', type=float, default=3e-4, help='Learning rate')
+    parser.add_argument('--load', type=str, default='', help='Prior weights path')
     parser.add_argument('--save', type=str, default='', help='Save weights path')
+    parser.add_argument('--inplace', type=str, default='', help='Load and save to the same checkpoint')
     args = parser.parse_args()
 
     print("=" * 60)

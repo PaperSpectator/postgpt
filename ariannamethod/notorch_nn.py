@@ -112,6 +112,10 @@ _sig('nt_seq_cross_entropy', _I, _I, _I, _I, _I)
 _sig('nt_save', _I, ctypes.c_char_p, ctypes.POINTER(_V), _I)
 _sig('nt_load', ctypes.POINTER(_V), ctypes.c_char_p, ctypes.POINTER(_I))
 
+_libc = ctypes.CDLL(None)
+_libc.free.argtypes = [_V]
+_libc.free.restype = None
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # C STRUCTS — exact layout (no USE_CUDA fields: the shim lib is CPU-only)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -395,6 +399,36 @@ class NotorchEngine:
         n = len(self.params)
         arr = (_V * n)(*[p._ptr for p in self.params])
         _lib.nt_save(path.encode(), arr, n)
+
+    def load(self, path):
+        #n = len(self.params)
+        n_loaded = _I(0)
+        pending_tensors = _lib.nt_load(path.encode(), ctypes.byref(n_loaded))
+        if not pending_tensors:
+            raise RuntimeError("No tensors loaded from file!")
+        else:
+            try:
+                # Validation
+                for i, tensor in enumerate(self.params):
+                    incoming = pending_tensors[i]
+                    loaded_incoming = _tensor_struct(incoming)
+                    want_shape = tensor.shape
+                    incoming_shape = tuple(loaded_incoming.shape[j] for j in range(loaded_incoming.ndim))
+                    if incoming_shape != want_shape:
+                        raise ValueError('\n'.join([
+                            f"Shape mismatch at tensor[{i}]!",
+                            f"- checkpoint: {incoming_shape}",
+                            f"- model: {expected_shape}"
+                            ]))
+                    pass
+                # Setting
+                for i, tensor in enumerate(self.params):
+                    tensor.set_data(Tensor(pending_tensors[i], owns=False).get_data())
+            finally:
+                for i in range(n_loaded.value):
+                    if pending_tensors[i]:
+                        _lib.nt_tensor_free(pending_tensors[i])
+                _libc.free(ctypes.cast(pending_tensors, _V))
 
 
 def seed(s):
