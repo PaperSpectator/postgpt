@@ -29,6 +29,7 @@ import math
 import time
 import random
 import argparse
+import pathlib
 
 # notorch — replaces PyTorch for the whole training path. No torch import anywhere.
 try:
@@ -169,7 +170,11 @@ def get_sequence(token_ids, context_len):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def train(args):
-    corpus_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'postgpt.txt')
+    if args.file:
+        corpus_path = args.file
+    else:
+        corpus_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'postgpt.txt')
+    corpus_path = pathlib.Path(corpus_path)
     if not os.path.exists(corpus_path):
         print(f"ERROR: {corpus_path} not found")
         return
@@ -260,6 +265,7 @@ def train(args):
 
 def main():
     parser = argparse.ArgumentParser(description='PostGPT Training on notorch + Chuck Optimizer')
+    parser.add_argument('-f', '--file', help="Use an alternate corpus")
     parser.add_argument('--steps', type=int, default=200, help='Training steps')
     parser.add_argument('--context_len', type=int, default=64, help='Context length')
     parser.add_argument('--n_embd', type=int, default=48, help='Embedding dimension')
