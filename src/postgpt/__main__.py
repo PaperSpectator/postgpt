@@ -171,7 +171,7 @@ def main():
     if args.prompts:
         prompts = [' '.join(args.prompts)]
 
-    if args.prompt_mode in {'both', 'meta'}:
+    if args.continuation_mode in {'both', 'meta'}:
         print("\n" + "=" * 60)
         print("  PROOF OF CONCEPT: phrase continuation")
         print("  mode: metaweight (no training, just BPE + statistics)")
@@ -186,7 +186,7 @@ def main():
             print(f"\n  prompt:       \"{prompt}\"")
             print(f"  continuation: \"{continuation[:250]}\"")
 
-    if args.prompt_mode in {'both', 'full'}:
+    if args.continuation_mode in {'both', 'full'}:
         # Also show the full transformer + Dario field mode for first prompt
         print("\n" + "=" * 60)
         print("  FULL MODE: transformer + Dario field (both attentions)")
