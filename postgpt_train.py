@@ -211,7 +211,7 @@ def train(args):
     optimizer = ChuckOptimizer(lr=args.lr, max_grad_norm=1.0)
     engine = NotorchEngine(params, cfg, optimizer)
     load_path = args.inplace or args.load
-    if load_path:
+    if os.path.exists(load_path):
         print(f"\n[3.5] Loading prior checkpoint {load_path}")
         engine.load(load_path)
         print(" Checkpoint loaded!")
