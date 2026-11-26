@@ -135,6 +135,7 @@ def main():
     argsp.add_argument('-e', '--engine', help="Load engine parameters from a JSON file", default=None)
     argsp.add_argument('-c', '--context-len', help="Set the context size", default=64, type=int)
     argsp.add_argument('-w', '--metaweights-window', help="Set the metaweights window", default=4, type=int)
+    argsp.add_argument('-m', '--continuation-mode', default='both', help="The type of continuation to use", choices=('both', 'meta', 'full'))
     argsp.add_argument('prompts', nargs='*', help='What you want to ask the file')
     args = argsp.parse_args()
 
@@ -170,32 +171,34 @@ def main():
     if args.prompts:
         prompts = [' '.join(args.prompts)]
 
-    print("\n" + "=" * 60)
-    print("  PROOF OF CONCEPT: phrase continuation")
-    print("  mode: metaweight (no training, just BPE + statistics)")
-    print("=" * 60)
+    if args.prompt_mode in {'both', 'meta'}:
+        print("\n" + "=" * 60)
+        print("  PROOF OF CONCEPT: phrase continuation")
+        print("  mode: metaweight (no training, just BPE + statistics)")
+        print("=" * 60)
 
-    for prompt in prompts:
-        result = continue_phrase(prompt, tokenizer, meta, model,
-                                  max_tokens=100, temperature=0.4, mode='meta')
-        # Show prompt → continuation clearly
-        prompt_len = len(prompt)
-        continuation = result[prompt_len:].strip()
-        print(f"\n  prompt:       \"{prompt}\"")
-        print(f"  continuation: \"{continuation[:250]}\"")
+        for prompt in prompts:
+            result = continue_phrase(prompt, tokenizer, meta, model,
+                                    max_tokens=100, temperature=0.4, mode='meta')
+            # Show prompt → continuation clearly
+            prompt_len = len(prompt)
+            continuation = result[prompt_len:].strip()
+            print(f"\n  prompt:       \"{prompt}\"")
+            print(f"  continuation: \"{continuation[:250]}\"")
 
-    # Also show the full transformer + Dario field mode for first prompt
-    print("\n" + "=" * 60)
-    print("  FULL MODE: transformer + Dario field (both attentions)")
-    print("=" * 60)
+    if args.prompt_mode in {'both', 'full'}:
+        # Also show the full transformer + Dario field mode for first prompt
+        print("\n" + "=" * 60)
+        print("  FULL MODE: transformer + Dario field (both attentions)")
+        print("=" * 60)
 
-    test_prompt = prompts[0]
-    result = continue_phrase(test_prompt, tokenizer, meta, model,
-                              max_tokens=30, temperature=0.45, mode='full')
-    prompt_len = len(test_prompt)
-    continuation = result[prompt_len:].strip()
-    print(f"\n  prompt:       \"{test_prompt}\"")
-    print(f"  continuation: \"{continuation[:300]}\"")
+        for prompt in prompts:
+            result = continue_phrase(prompt, tokenizer, meta, model,
+                                    max_tokens=30, temperature=0.45, mode='full')
+            prompt_len = len(prompt)
+            continuation = result[prompt_len:].strip()
+            print(f"\n  prompt:       \"{prompt}\"")
+            print(f"  continuation: \"{continuation[:300]}\"")
 
     print("\n" + "=" * 60)
     print("  PostGPT complete. The metaweights remember.")
