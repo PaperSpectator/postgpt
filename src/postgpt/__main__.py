@@ -52,7 +52,7 @@ from .implementations import PostGPT
 # ─────────────────────────────────────────────────────────────────────────────
 from . import DEFAULT_ENGINE_CONFIG
 
-def load_engine(corpus_path=None, engine_config=None, context_len=64):
+def load_engine(corpus_path=None, engine_config=None, context_len=64, metaweights_window=4):
     """Load corpus, learn BPE, build metaweights, init model. Returns (tokenizer, meta, model)."""
     if corpus_path is None:
         corpus_path = pathlib.Path(__file__).absolute().parent.parent.parent / 'postgpt.txt'
@@ -87,7 +87,7 @@ def load_engine(corpus_path=None, engine_config=None, context_len=64):
     # Step 3: Build metaweights from tokenized corpus
     print("\n[3] Building metaweight probability space...")
     meta = MetaWeights(tokenizer.vocab_size, context_len=context_len)
-    meta.build(token_ids, window=4)
+    meta.build(token_ids, window=metaweights_window)
 
     # Step 4: Initialize dual-attention transformer
     print("\n[4] Initializing PostGPT transformer...")
@@ -134,6 +134,7 @@ def main():
     argsp.add_argument('-f', '--file', help="Use an alternate corpus")
     argsp.add_argument('-e', '--engine', help="Load engine parameters from a JSON file", default=None)
     argsp.add_argument('-c', '--context-len', help="Set the context size", default=64, type=int)
+    argsp.add_argument('-w', '--metaweights-window', help="Set the metaweights window", default=4, type=int)
     argsp.add_argument('prompts', nargs='*', help='What you want to ask the file')
     args = argsp.parse_args()
 
@@ -146,7 +147,7 @@ def main():
         with open(args.engine) as f:
             engine_config = json.load(f)
 
-    tokenizer, meta, model = load_engine(args.file, engine_config=engine_config, context_len=args.context_len)
+    tokenizer, meta, model = load_engine(args.file, engine_config=engine_config, context_len=args.context_len, metaweights_window=args.metaweights_window)
     if tokenizer is None:
         return
 
