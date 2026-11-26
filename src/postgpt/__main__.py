@@ -16,6 +16,7 @@ import argparse
 import pathlib
 import os
 import random
+import json
 
 random.seed(42)
 
@@ -49,8 +50,9 @@ from .implementations import PostGPT
 # V. MAIN — tokenize, build metaweights, continue phrases.
 #    the moment of truth. or the moment of coherent bullshit. same thing.
 # ─────────────────────────────────────────────────────────────────────────────
+from . import DEFAULT_ENGINE_CONFIG
 
-def load_engine(corpus_path=None):
+def load_engine(corpus_path=None, engine_config=None, context_len=64):
     """Load corpus, learn BPE, build metaweights, init model. Returns (tokenizer, meta, model)."""
     if corpus_path is None:
         corpus_path = pathlib.Path(__file__).absolute().parent.parent.parent / 'postgpt.txt'
@@ -84,19 +86,17 @@ def load_engine(corpus_path=None):
 
     # Step 3: Build metaweights from tokenized corpus
     print("\n[3] Building metaweight probability space...")
-    meta = MetaWeights(tokenizer.vocab_size, context_len=64)
+    meta = MetaWeights(tokenizer.vocab_size, context_len=context_len)
     meta.build(token_ids, window=4)
 
     # Step 4: Initialize dual-attention transformer
     print("\n[4] Initializing PostGPT transformer...")
+    if not engine_config:
+        engine_config = DEFAULT_ENGINE_CONFIG.copy()
+        engine_config['context_len'] = context_len
     model = PostGPT(
         vocab_size=tokenizer.vocab_size,
-        context_len=64,
-        n_embd=48,
-        n_head=4,
-        n_layer=2,
-        n_content_heads=2,
-        n_rrpram_heads=2,
+        **engine_config
     )
 
     # Step 5: Seed transformer weights from metaweights (ghost → flesh)
@@ -132,6 +132,8 @@ def continue_phrase(prompt, tokenizer, meta, model, max_tokens=120, temperature=
 def main():
     argsp = argparse.ArgumentParser(description="Let the tokens speak for themselves.")
     argsp.add_argument('-f', '--file', help="Use an alternate corpus")
+    argsp.add_argument('-e', '--engine', help="Load engine parameters from a JSON file", default=None)
+    argsp.add_argument('-c', '--context-len', help="Set the context size", default=64, type=int)
     argsp.add_argument('prompts', nargs='*', help='What you want to ask the file')
     args = argsp.parse_args()
 
@@ -139,8 +141,12 @@ def main():
     print("  PostGPT — metaweight BPE transformer")
     print("  resonance is unbreakable")
     print("=" * 60)
+    engine_config = None
+    if args.engine and os.path.exists(args.engine):
+        with open(args.engine) as f:
+            engine_config = json.load(f)
 
-    tokenizer, meta, model = load_engine(args.file)
+    tokenizer, meta, model = load_engine(args.file, engine_config=engine_config, context_len=args.context_len)
     if tokenizer is None:
         return
 
