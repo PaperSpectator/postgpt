@@ -6,3 +6,7 @@ __pycache__/
 ariannamethod/libnotorch.dylib
 ariannamethod/libnotorch.so
 ariannamethod/*.o
+
+# vim stuff
+*.swp
+*.swo
