@@ -121,6 +121,9 @@ def load_engine(corpus_path=None, tokenizer_path=None, engine_config=None, conte
     print("\n[3] Building metaweight probability space...")
     meta = MetaWeights(vocab_size, context_len=context_len)
     meta.build(token_ids, window=metaweights_window)
+    mw_json = corpus_path.with_suffix('.mw.json')
+    with open(mw_json, 'w', encoding='utf-8') as mw_f:
+        json.dump(meta.todict(), mw_f, indent=4)
 
     # Step 4: Initialize dual-attention transformer
     print("\n[4] Initializing PostGPT transformer...")

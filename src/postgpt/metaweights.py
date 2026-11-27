@@ -1,5 +1,8 @@
+import ast
+from dataclasses import dataclass, field as dc_field, fields as dc_fields
 import time
 
+@dataclass
 class MetaWeights:
     """
     Metaweights: weights that are implied to exist, but don't.
@@ -18,28 +21,25 @@ class MetaWeights:
 
     The metaweights are the ghost in the machine.
     """
+    vocab_size: int
+    context_len: int
+    unigram: list|None = None
+    # Bigram: p(next | prev) — sparse dict of dict
+    bigram: dict = dc_field(default_factory=dict)
+    # Trigram: p(next | prev2, prev1) — sparse
+    trigram: dict = dc_field(default_factory=dict)
+    # Positional affinity: which tokens appear at which positions
+    # token -> list of position counts
+    pos_affinity: dict = dc_field(default_factory=dict)
+    # Hebbian trace: co-occurrence within a window
+    # (tok_a, tok_b) -> strength
+    hebbian: dict = dc_field(default_factory=dict)
+    total: int = 0
 
-    def __init__(self, vocab_size, context_len):
-        self.vocab_size = vocab_size
-        self.context_len = context_len
-
+    def __post_init__(self):
         # Unigram: p(token)
-        self.unigram = [0.0] * vocab_size
-
-        # Bigram: p(next | prev) — sparse dict of dict
-        self.bigram = {}
-
-        # Trigram: p(next | prev2, prev1) — sparse
-        self.trigram = {}
-
-        # Positional affinity: which tokens appear at which positions
-        self.pos_affinity = {}  # token -> list of position counts
-
-        # Hebbian trace: co-occurrence within a window
-        self.hebbian = {}  # (tok_a, tok_b) -> strength
-
-        # Total tokens seen
-        self.total = 0
+        if not self.unigram:
+            self.unigram = [0.0] * self.vocab_size
 
     def build(self, token_ids, window=8):
         """Build metaweight space from tokenized corpus."""
@@ -177,3 +177,35 @@ class MetaWeights:
         if max_s > 0:
             signal = [s / max_s for s in signal]
         return signal
+
+    def fromdict(self, input_dict):
+        whitelist = set([f.name for f in dc_fields(self)])
+        vocab_size: int
+        context_len: int
+        unigram: list|None = None
+        # Bigram: p(next | prev) — sparse dict of dict
+        bigram: dict = dc_field(default_factory=dict)
+        # Trigram: p(next | prev2, prev1) — sparse
+        trigram: dict = dc_field(default_factory=dict)
+        # Positional affinity: which tokens appear at which positions
+        # token -> list of position counts
+        pos_affinity: dict = dc_field(default_factory=dict)
+        # Hebbian trace: co-occurrence within a window
+        # (tok_a, tok_b) -> strength
+        hebbian: dict = dc_field(default_factory=dict)
+        total: int = 0
+        for k, v in input_dict.items():
+            if k == 'trigram':
+                setattr(self, k, {ast.literal_eval(kk): vv for kk, vv in v.items()})
+            elif k == 'hebbian':
+                setattr(self, k, {ast.literal_eval(kk): vv for kk, vv in v.items()})
+            else:
+                setattr(self, k, v)
+
+    def todict(self):
+        stub = {f.name: getattr(self, f.name) for f in dc_fields(self)}
+        del stub['trigram']
+        del stub['hebbian']
+        stub['trigram'] = {repr(k): v for k, v in self.trigram.items()}
+        stub['hebbian'] = {repr(k): v for k, v in self.hebbian.items()}
+        return stub
