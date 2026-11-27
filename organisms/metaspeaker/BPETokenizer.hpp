@@ -26,7 +26,7 @@ class BPETokenizer {
         BPETokenizer(size_t max_merges=1792) {
             this->max_merges = max_merges;
             for (uint32_t i = 0; i < 256; i++) {
-                vocab[i] = { (char)i };
+                this->vocab[i] = { (char)i };
             }
         }
         vector<uint32_t> learn(string text, optional<size_t> num_merges=nullopt) {
@@ -34,9 +34,10 @@ class BPETokenizer {
             for (auto c: text) {
                 ids.push_back(c);
             }
+            cout << "BPE started\n";
             size_t n_merges = num_merges.value_or(this->max_merges);
             n_merges = min(n_merges, this->max_merges);
-            for (size_t m; m < n_merges; m++) {
+            for (size_t m = 0; m < n_merges; m++) {
                 map<bigram_key_t, size_t, hash_bigram> counts = this->count_pairs(ids);
                 if (counts.size() == 0) {
                     break;
@@ -52,15 +53,16 @@ class BPETokenizer {
                 if (max_count < 2) {
                     break;
                 }
-                uint32_t new_id = 256 + m;
+                uint32_t new_id = 256 + static_cast<uint32_t>(m);
                 ids = this->merge_pair(ids, best_pair, new_id);
                 trigram_key_t merge;
                 this->merges.push_back(trigram_key_t(get<0>(best_pair), get<1>(best_pair), new_id));
                 ostringstream ss;
-                ss << get<0>(best_pair);
-                ss << get<1>(best_pair);
+                ss << this->vocab[get<0>(best_pair)];
+                ss << this->vocab[get<1>(best_pair)];
                 this->vocab[new_id] = ss.str();
             }
+            cout << "BPE done\n";
 
             return ids;
         }
@@ -77,7 +79,7 @@ class BPETokenizer {
         string decode(vector<uint32_t> tokens) {
             ostringstream ss;
             for (auto token : tokens) {
-                ss << vocab[token];
+                ss << this->vocab[token];
             }
             return ss.str();
         }
