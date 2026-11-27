@@ -7,6 +7,10 @@ ariannamethod/libnotorch.dylib
 ariannamethod/libnotorch.so
 ariannamethod/*.o
 
+# compiled organisms
+*.bin
+*.exe
+
 # vim stuff
 *.swp
 *.swo

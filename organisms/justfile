@@ -1,0 +1,3 @@
+all: metaspeaker
+metaspeaker:
+    g++ -g -o metaspeaker ./metaspeaker/main.cpp
