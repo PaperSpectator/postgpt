@@ -14,6 +14,7 @@
 #include <string>
 #include <variant>
 
+#include "srell.hpp"
 #include "json.hpp"
 #include "common.hpp"
 
@@ -80,11 +81,14 @@ class BPETokenizer {
                 // TODO: support regex later
                 vector<string> substrs;
                 // actually save preprocessors for later
-                regex re("\\s+");
-                sregex_token_iterator first{text.begin(), text.end(), re, -1};
-                sregex_token_iterator last;
-                for (; first != last; ++first) {
-                    string sub_text = *first;
+                string pattern = "(?:(?i:'s|'t|'re|'ve|'m|'ll|'d)|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+)";
+                srell::regex re(pattern);
+                srell::regex_iterator2 it(text.begin(), text.end(), re);
+                //srell::regex_iterator  last;
+                it.split_begin();
+                do {
+                    string sub_text = it.split_aptrange().str();
+                    substrs.push_back(sub_text);
                     if (this->str_to_id.contains(sub_text)) {
                         ids.push_back(str_to_id[sub_text]);
                     } else {
@@ -92,7 +96,7 @@ class BPETokenizer {
                             ids.push_back(str_to_id[{c}]);
                         }
                     }
-                }
+                } while(it.split_next());
             } else {
                 for (auto c: text) {
                     ids.push_back(c);
