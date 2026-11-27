@@ -18,8 +18,6 @@ import os
 import random
 import json
 
-random.seed(42)
-
 # ─────────────────────────────────────────────────────────────────────────────
 # I. BPE TOKENIZER — learns merge rules from corpus.
 #    the tokenizer IS the training. everything after this is just theater.
@@ -176,8 +174,11 @@ def main():
     argsp.add_argument('-c', '--context-len', help="Set the context size", default=64, type=int)
     argsp.add_argument('-w', '--metaweights-window', help="Set the metaweights window", default=4, type=int)
     argsp.add_argument('-m', '--continuation-mode', default='both', help="The type of continuation to use", choices=('both', 'meta', 'full'))
+    argsp.add_argument('--seed', default=42, help="Seed for generation")
     argsp.add_argument('prompts', nargs='*', help='What you want to ask the file')
     args = argsp.parse_args()
+
+    random.seed(args.seed)
 
     print("=" * 60)
     print("  PostGPT — metaweight BPE transformer")
