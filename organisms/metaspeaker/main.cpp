@@ -21,7 +21,7 @@
 
 using namespace std;
 
-int main()
+int main(int argc, char **argv)
 {
     BPETokenizer tokenizer;
     CLI::App app("metaspeaker");
@@ -33,10 +33,11 @@ int main()
     bool train = true;
     app.add_option("--file", corpus_path, "The path to initialize the metaweights");
     app.add_option("--prompt", prompt, "The question you want to ask the metaspeaker");
-    app.add_option("--no-train", train, "Disable BPE training before speaking");
+    app.add_flag("--train,!--no-train", train, "Enable/disable BPE training before speaking");
     app.add_option("--bpe", bpe_path, "BPE to load");
     app.add_option("--context-len", context_len, "Context length");
     app.add_option("--vocab-size", vocab_size, "Vocab size");
+    CLI11_PARSE(app, argc, argv);
 
     ifstream corpus(corpus_path);
     ostringstream buffer;

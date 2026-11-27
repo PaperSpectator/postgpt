@@ -1,4 +1,5 @@
 #pragma once
+#include <regex>
 #include <array>
 #include <algorithm>
 #include <cstdint>
@@ -13,20 +14,25 @@
 #include <string>
 #include <variant>
 
+#include "json.hpp"
 #include "common.hpp"
 
+using nlohmann::json;
 using namespace std;
 
 class BPETokenizer {
     public:
         size_t max_merges;
         uint32_t vocab_size;
+        bool deprioritize_merges = false;
         vector<trigram_key_t> merges;
         map<uint32_t, string> vocab;
+        map<string, uint32_t> str_to_id;
         BPETokenizer(size_t max_merges=1792) {
             this->max_merges = max_merges;
             for (uint32_t i = 0; i < 256; i++) {
                 this->vocab[i] = { (char)i };
+                this->str_to_id[{ (char)i }] = i;
             }
         }
         vector<uint32_t> learn(string text, optional<size_t> num_merges=nullopt) {
@@ -60,7 +66,9 @@ class BPETokenizer {
                 ostringstream ss;
                 ss << this->vocab[get<0>(best_pair)];
                 ss << this->vocab[get<1>(best_pair)];
-                this->vocab[new_id] = ss.str();
+                string new_tok_str = ss.str();
+                this->str_to_id[new_tok_str] = new_id;
+                this->vocab[new_id] = new_tok_str;
             }
             cout << "BPE done\n";
 
@@ -68,8 +76,27 @@ class BPETokenizer {
         }
         vector<uint32_t> encode(string text) {
             vector<uint32_t> ids;
-            for (auto c: text) {
-                ids.push_back(c);
+            if (this->deprioritize_merges) {
+                // TODO: support regex later
+                vector<string> substrs;
+                // actually save preprocessors for later
+                regex re("\\s+");
+                sregex_token_iterator first{text.begin(), text.end(), re, -1};
+                sregex_token_iterator last;
+                for (; first != last; ++first) {
+                    string sub_text = *first;
+                    if (this->str_to_id.contains(sub_text)) {
+                        ids.push_back(str_to_id[sub_text]);
+                    } else {
+                        for (auto c: sub_text) {
+                            ids.push_back(str_to_id[{c}]);
+                        }
+                    }
+                }
+            } else {
+                for (auto c: text) {
+                    ids.push_back(c);
+                }
             }
             for (auto m: this->merges) {
                 ids = this->merge_pair(ids, bigram_key_t(get<0>(m), get<1>(m)), get<2>(m));
@@ -78,12 +105,42 @@ class BPETokenizer {
         }
         string decode(vector<uint32_t> tokens) {
             ostringstream ss;
+            // TODO: with deprioritize_merges, output has no spaces
             for (auto token : tokens) {
                 ss << this->vocab[token];
             }
             return ss.str();
         }
         void load(string path) {
+            cout << "Loading existing BPE...\n";
+            ifstream f(path);
+            json data = json::parse(f);
+            // TODO: doesn't apply pretokenizers yet
+            for (const auto& [key, val]: data["model"]["vocab"].items()) {
+                this->vocab[val.get<uint32_t>()] = key;
+                this->str_to_id[key] = val.get<uint32_t>();
+            }
+            this->vocab_size = static_cast<uint32_t>(this->vocab.size());
+            if (data["model"].contains("ignore_merges")) {
+                this->deprioritize_merges = data["model"]["ignore_merges"].get<bool>();
+            } else {
+                this->deprioritize_merges = false;
+            }
+            for (auto pair_toks: data["model"]["merges"]) {
+                ostringstream ss;
+                string tok1_string = pair_toks[0].get<string>();
+                string tok2_string = pair_toks[1].get<string>();
+                ss << tok1_string;
+                ss << tok2_string;
+                string combo_str = ss.str();
+                trigram_key_t merge(
+                    data["model"]["vocab"][tok1_string].get<uint32_t>(),
+                    data["model"]["vocab"][tok2_string].get<uint32_t>(),
+                    data["model"]["vocab"][combo_str].get<uint32_t>()
+                );
+                this->merges.push_back(merge);
+            }
+            cout << "Loading complete!\n";
             return;
         }
         void save(string path) {
