@@ -52,7 +52,7 @@ from .implementations import PostGPT
 # ─────────────────────────────────────────────────────────────────────────────
 from . import DEFAULT_ENGINE_CONFIG
 
-def load_engine(corpus_path=None, engine_config=None, context_len=64, metaweights_window=4):
+def load_engine(corpus_path=None, tokenizer_path=None, engine_config=None, context_len=64, metaweights_window=4):
     """Load corpus, learn BPE, build metaweights, init model. Returns (tokenizer, meta, model)."""
     if corpus_path is None:
         corpus_path = pathlib.Path(__file__).absolute().parent.parent.parent / 'postgpt.txt'
@@ -71,22 +71,55 @@ def load_engine(corpus_path=None, engine_config=None, context_len=64, metaweight
 
     # Step 2: BPE tokenization — load saved merges if they exist
     print("\n[2] BPE tokenizer...")
-    tokenizer = BPETokenizer(max_merges=1024)
-    #merges_path = corpus_path.replace('.txt', '.merges')
-    merges_path = corpus_path.with_suffix('.merges')
-    if os.path.exists(merges_path):
-        tokenizer.load(merges_path)
-        token_ids = tokenizer.encode(raw_data)
-        print(f"  Loaded {len(tokenizer.merges)} merges from {os.path.basename(merges_path)}. "
-              f"Encoding: {len(token_ids)} tokens")
+    if tokenizer_path:
+        tokenizer_path = pathlib.Path(tokenizer_path)
+        match tokenizer_path.suffix:
+            case '.merges':
+                print("Loading tokenizer from .merges bin")
+                if not os.path.exists(tokenizer_path):
+                    raise ValueError("Tokenizer must exist!")
+                tokenizer = BPETokenizer(max_merges=1024)
+                tokenizer.load(tokenizer_path)
+                vocab_size = tokenizer.vocab_size
+                token_ids = tokenizer.encode(raw_data)
+                print(f"  Loaded {len(tokenizer.merges)} merges from {os.path.basename(tokenizer_path)}. "
+                f"Encoding: {len(token_ids)} tokens")
+            case '.json':
+                print("Loading tokenizer from *.json")
+                from tokenizers import Tokenizer
+                if not os.path.exists(tokenizer_path):
+                    raise ValueError("Tokenizer must exist!")
+                tokenizer  = Tokenizer.from_file(str(tokenizer_path))
+                vocab_size = tokenizer.get_vocab_size()
+                token_ids  = tokenizer.encode(raw_data.decode('utf-8')).ids
+                #print(token_ids.ids)
+            case _:
+                print("Loading tokenizer from HuggingFace")
+                from tokenizers import Tokenizer
+                tokenizer  = Tokenizer.from_pretrained(tokenizer_path)
+                vocab_size = tokenizer.get_vocab_size()
+                token_ids  = tokenizer.encode(raw_data.decode('utf-8')).ids
+
     else:
-        token_ids = tokenizer.learn(raw_data, num_merges=1024)
-        tokenizer.save(merges_path)
-        print(f"  Saved merges to {os.path.basename(merges_path)}")
+        tokenizer = BPETokenizer(max_merges=1024)
+        #merges_path = corpus_path.replace('.txt', '.merges')
+        merges_path = corpus_path.with_suffix('.merges')
+        if os.path.exists(merges_path):
+            tokenizer.load(merges_path)
+            vocab_size = tokenizer.vocab_size
+            # TODO: skip encoding the corpus just to count how many IDs we have since we aren't learning from it
+            token_ids = tokenizer.encode(raw_data)
+            print(f"  Loaded {len(tokenizer.merges)} merges from {os.path.basename(merges_path)}. "
+                f"Encoding: {len(token_ids)} tokens")
+        else:
+            token_ids = tokenizer.learn(raw_data, num_merges=1024)
+            vocab_size = tokenizer.vocab_size
+            tokenizer.save(merges_path)
+            print(f"  Saved merges to {os.path.basename(merges_path)}")
 
     # Step 3: Build metaweights from tokenized corpus
     print("\n[3] Building metaweight probability space...")
-    meta = MetaWeights(tokenizer.vocab_size, context_len=context_len)
+    meta = MetaWeights(vocab_size, context_len=context_len)
     meta.build(token_ids, window=metaweights_window)
 
     # Step 4: Initialize dual-attention transformer
@@ -95,13 +128,9 @@ def load_engine(corpus_path=None, engine_config=None, context_len=64, metaweight
         engine_config = DEFAULT_ENGINE_CONFIG.copy()
         engine_config['context_len'] = context_len
     model = PostGPT(
-        vocab_size=tokenizer.vocab_size,
+        vocab_size=vocab_size,
         **engine_config
     )
-
-    # Step 5: Seed transformer weights from metaweights (ghost → flesh)
-    print("\n[5] Seeding transformer from metaweights...")
-    model.init_from_metaweights(meta)
 
     return tokenizer, meta, model
 
@@ -118,6 +147,13 @@ def continue_phrase(prompt, tokenizer, meta, model, max_tokens=120, temperature=
     prompt_ids = tokenizer.encode(prompt)
     if not prompt_ids:
         return prompt
+    try:
+        iterator = iter(prompt_ids)
+    except TypeError:
+        # we got a huggingface tokenizer
+        print("Prompt ids encoding not initially iterable because huggingface tokenizer")
+        print("Grabbing the ids field")
+        prompt_ids = prompt_ids.ids
 
     if mode == 'meta':
         generated = model.generate_meta(prompt_ids, max_tokens=max_tokens,
@@ -132,6 +168,7 @@ def continue_phrase(prompt, tokenizer, meta, model, max_tokens=120, temperature=
 def main():
     argsp = argparse.ArgumentParser(description="Let the tokens speak for themselves.")
     argsp.add_argument('-f', '--file', help="Use an alternate corpus")
+    argsp.add_argument('-t', '--tokenizer', help="Talk with non-dynamic tokenizer", default=None)
     argsp.add_argument('-e', '--engine', help="Load engine parameters from a JSON file", default=None)
     argsp.add_argument('-c', '--context-len', help="Set the context size", default=64, type=int)
     argsp.add_argument('-w', '--metaweights-window', help="Set the metaweights window", default=4, type=int)
@@ -148,9 +185,20 @@ def main():
         with open(args.engine) as f:
             engine_config = json.load(f)
 
-    tokenizer, meta, model = load_engine(args.file, engine_config=engine_config, context_len=args.context_len, metaweights_window=args.metaweights_window)
+    loader_args = {
+        'tokenizer_path': args.tokenizer,
+        'engine_config': engine_config,
+        'context_len': args.context_len,
+        'metaweights_window': args.metaweights_window
+    }
+    tokenizer, meta, model = load_engine(args.file, **loader_args)
     if tokenizer is None:
         return
+
+    # Step 5: Seed transformer weights from metaweights (ghost → flesh)
+    if args.continuation_mode in {'both', 'full'}:
+        print("\nFull mode requested, seeding transformer from metaweights...")
+        model.init_from_metaweights(meta)
 
     # ── Proof of concept: continue phrases from postgpt.txt ──
     # The model uses BPE tokenization + dual attention + metaweights
