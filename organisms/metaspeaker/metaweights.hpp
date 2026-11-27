@@ -24,8 +24,8 @@ class MetaWeights {
         size_t tokens_seen   = 0;
         vector<float> unigram;
         map<bigram_key_t, float, hash_bigram> bigram;
-        map<trigram_key_t, uint32_t, hash_trigram> trigram;
-        map<uint32_t, vector<uint32_t>> pos_affinity;
+        map<trigram_key_t, float, hash_trigram> trigram;
+        map<uint32_t, vector<float>> pos_affinity;
         map<hebbian_key_t, float, hash_bigram> hebbian;
         // TODO: how to normalize as we collect
         MetaWeights(uint32_t vocab_size, size_t context_len) {
@@ -54,31 +54,31 @@ class MetaWeights {
 
                 // collect unigram
                 if (tid < vocab_size) {
-                    this->unigram[tid] += 1.0;
-                    valid_tokens_seen += 1.0;
+                    this->unigram[tid] += 1.0f;
+                    valid_tokens_seen += 1.0f;
                 }
 
                 // collect bigram
                 if (!this->bigram.contains(bigram_key)) {
-                    this->bigram[bigram_key] = 0.0;
+                    this->bigram[bigram_key] = 0.0f;
                 }
-                bigram_total[tid]        += 1.0;
-                this->bigram[bigram_key] += 1.0;
+                bigram_total[tid]        += 1.0f;
+                this->bigram[bigram_key] += 1.0f;
 
                 // collect trigram
                 if (!this->trigram.contains(trigram_key)) {
-                    this->trigram[trigram_key] = 0.0;
+                    this->trigram[trigram_key] = 0.0f;
                 }
-                this->trigram[trigram_key] += 1.0;
-                trigram_total[bigram_key]  += 1.0;
+                this->trigram[trigram_key] += 1.0f;
+                trigram_total[bigram_key]  += 1.0f;
 
                 
                 size_t ctx_pos = i % this->context_len;
                 if (this->pos_affinity[tid].size() == 0) {
-                    this->pos_affinity[tid].assign(this->context_len, 0.0);
+                    this->pos_affinity[tid].assign(this->context_len, 0.0f);
                 }
-                this->pos_affinity[tid][ctx_pos] += 1.0;
-                pos_affinity_total[tid]          += 1.0;
+                this->pos_affinity[tid][ctx_pos] += 1.0f;
+                pos_affinity_total[tid]          += 1.0f;
             }
 
             // collect the remaining unigrams
@@ -86,18 +86,24 @@ class MetaWeights {
             for (size_t i = token_ids.size() - 2; i < token_ids.size(); i++) {
                 uint32_t tid = token_ids[i];
                 if (tid < vocab_size) {
-                    this->unigram[tid] += 1.0;
-                    valid_tokens_seen += 1.0;
+                    this->unigram[tid] += 1.0f;
+                    valid_tokens_seen  += 1.0f;
                 }
                 if (need_remaining_bigram) {
-                    uint32_t tid_next = token_ids[i] + 1;
+                    uint32_t tid_next = token_ids[i + 1];
                     bigram_key_t  bigram_key(tid, tid_next);
-                    this->bigram[bigram_key] += 1.0;
-                    bigram_total[tid]       += 1.0;
+                    if (!this->bigram.contains(bigram_key)) {
+                        this->bigram[bigram_key] = 0.0f;
+                    }
+                    this->bigram[bigram_key] += 1.0f;
+                    bigram_total[tid]        += 1.0f;
                     need_remaining_bigram = false;
                 }
                 size_t ctx_pos = i % this->context_len;
-                this->pos_affinity[tid][ctx_pos] += 1.0;
+                if (this->pos_affinity[tid].size() == 0) {
+                    this->pos_affinity[tid].assign(this->context_len, 0.0f);
+                }
+                this->pos_affinity[tid][ctx_pos] += 1.0f;
             }
 
             // normalize unigrams
@@ -135,9 +141,9 @@ class MetaWeights {
                     uint32_t a = token_ids[i];
                     uint32_t b = token_ids[j];
                     hebbian_key_t hebb_key(min(a, b), max(a, b));
-                    float decay = 1.0 / (1.0 - abs(static_cast<float>(i) - static_cast<float>(j)));
+                    float decay = 1.0f / (1.0f + abs(static_cast<float>(i) - static_cast<float>(j)));
                     if (!this->hebbian.contains(hebb_key)) {
-                        this->hebbian[hebb_key] = 0.0;
+                        this->hebbian[hebb_key] = 0.0f;
                     }
                     this->hebbian[hebb_key] += decay;
                     if (this->hebbian[hebb_key] > hebbian_max) {
@@ -146,14 +152,16 @@ class MetaWeights {
                 }
             }
 
-            if (this->hebbian.size() > 0) {
+            if (this->hebbian.size() > 0 && hebbian_max > 0.0f) {
                 for (const auto& key : std::views::keys(this->hebbian)) {
                     this->hebbian[key] /= hebbian_max;
                 }
             }
         }
-        vector<uint32_t> generate(vector<uint32_t> prompt_ids, size_t max_tokens=128, float temperature=0.85, size_t window=4, size_t penalize_recent=12, optional<uint32_t> seed = nullopt, size_t top_k=15) {
+        vector<uint32_t> generate(vector<uint32_t> prompt_ids, size_t max_tokens=128, float temperature=0.85f, size_t window=4, size_t penalize_recent=12, optional<uint32_t> seed = nullopt, size_t top_k=15) {
             vector<uint32_t> generated(prompt_ids);
+            mt19937 gen(seed.value_or(random_device{}()));
+            uniform_real_distribution<float> dis(0.0f, 1.0f);
             if (prompt_ids.size() == 0) {
                 return generated;
             }
@@ -179,7 +187,7 @@ class MetaWeights {
                     }
                 }
                 if (candidates.size() == 0) {
-                    for (size_t j = 0; j < this->vocab_size; j++) {
+                    for (uint32_t j = 0; j < this->vocab_size; j++) {
                         if (this->unigram[j] > 1e-8) {
                             candidates[j] = this->unigram[j];
                         }
@@ -189,12 +197,17 @@ class MetaWeights {
                     break;
                 }
 
-                span<uint32_t> ctx = span{generated}.last(4);
+                span<uint32_t> ctx;
+                if (generated.size() >= window) {
+                    ctx = span{generated}.last(window);
+                } else {
+                    ctx = span{generated};
+                }
                 for (const auto& tok : std::views::keys(candidates)) {
                     for (auto ct: ctx) {
                         hebbian_key_t heb_key(min(tok, ct), max(tok, ct));
                         if (this->hebbian.contains(heb_key)) {
-                            candidates[tok] *= (1.0 + 0.3 * this->hebbian[heb_key]);
+                            candidates[tok] *= (1.0f + 0.3f * this->hebbian[heb_key]);
                         }
                     }
                 }
@@ -208,14 +221,14 @@ class MetaWeights {
                 }
                 for (auto t: recent) {
                     if (!recent_counts.contains(t)) {
-                        recent_counts[t] = 0.0;
+                        recent_counts[t] = 0.0f;
                     }
-                    recent_counts[t] += 1.0;
+                    recent_counts[t] += 1.0f;
                 }
                 for (const auto& key : std::views::keys(candidates)) {
                     if (recent_counts.contains(key)) {
                         float freq = recent_counts[key];
-                        float penalty = 1.0 / (1.0 + 0.5 * freq);
+                        float penalty = 1.0f / (1.0f + 0.5f * freq);
                         candidates[key] *= penalty;
                     }
                 }
@@ -237,7 +250,7 @@ class MetaWeights {
                 float total = 0.0;
                 float max_lc = -999999999999999999.f;
                 for (size_t i = 0; i < log_counts.size(); i++) {
-                    log_counts[i] = log(top_k_window[i].second + 1e-10) / temperature;
+                    log_counts[i] = log(top_k_window[i].second + 1e-10f) / temperature;
                     if (log_counts[i] > max_lc) {
                         max_lc = log_counts[i];
                     }
@@ -249,12 +262,10 @@ class MetaWeights {
                 for (size_t i = 0; i < probs.size(); i++) {
                     probs[i] = exps[i] / total;
                 }
-                
-                mt19937 gen(seed.value_or(random_device{}()));
-                uniform_real_distribution<> dis(0.0, 1.0);
+
                 float r = dis(gen);
                 float cumulative_prob = 0.0;
-                uint32_t chosen = top_k_window[0].first;
+                uint32_t chosen = top_k_window.back().first;
                 for (size_t i = 0; i < top_k_window.size(); i++) {
                     cumulative_prob += probs[i];
                     if (cumulative_prob > r) {
