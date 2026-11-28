@@ -79,24 +79,30 @@ class BPETokenizer {
             vector<uint32_t> ids;
             if (this->deprioritize_merges) {
                 // TODO: support regex later
-                vector<string> substrs;
+                //vector<string> substrs;
                 // actually save preprocessors for later
-                string pattern = "(?:(?i:'s|'t|'re|'ve|'m|'ll|'d)|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+)";
+                string pattern = "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+";
                 srell::regex re(pattern);
-                srell::regex_iterator2 it(text.begin(), text.end(), re);
-                //srell::regex_iterator  last;
-                it.split_begin();
-                do {
-                    string sub_text = it.split_aptrange().str();
-                    substrs.push_back(sub_text);
+                srell::smatch match;
+                auto begin = text.cbegin();
+                auto end   = text.cend();
+                //srell::u8csregex_iterator2 it(text.begin(), text.end(), re);
+                while (srell::regex_search(begin, end, match, re)) {
+                    string sub_text = match.str();
+                    //substrs.push_back(sub_text);
                     if (this->str_to_id.contains(sub_text)) {
-                        ids.push_back(str_to_id[sub_text]);
+                        ids.push_back(this->str_to_id[sub_text]);
                     } else {
                         for (auto c: sub_text) {
-                            ids.push_back(str_to_id[{c}]);
+                            string fallback_text(1, c);
+                            //substrs.push_back(fallback_text);
+                            if (this->str_to_id.contains(fallback_text)) {
+                                ids.push_back(this->str_to_id[fallback_text]);
+                            }
                         }
                     }
-                } while(it.split_next());
+                    begin = match[0].second;
+                }
             } else {
                 for (auto c: text) {
                     ids.push_back(c);
@@ -120,6 +126,8 @@ class BPETokenizer {
             ifstream f(path);
             json data = json::parse(f);
             // TODO: doesn't apply pretokenizers yet
+            this->vocab.clear();
+            this->str_to_id.clear();
             for (const auto& [key, val]: data["model"]["vocab"].items()) {
                 this->vocab[val.get<uint32_t>()] = key;
                 this->str_to_id[key] = val.get<uint32_t>();
