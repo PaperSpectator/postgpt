@@ -1,5 +1,7 @@
 import ast
 from dataclasses import dataclass, field as dc_field, fields as dc_fields
+import random
+import math
 import time
 
 @dataclass
@@ -179,24 +181,19 @@ class MetaWeights:
         return signal
 
     def fromdict(self, input_dict):
-        whitelist = set([f.name for f in dc_fields(self)])
-        vocab_size: int
-        context_len: int
-        unigram: list|None = None
-        # Bigram: p(next | prev) — sparse dict of dict
-        bigram: dict = dc_field(default_factory=dict)
-        # Trigram: p(next | prev2, prev1) — sparse
-        trigram: dict = dc_field(default_factory=dict)
-        # Positional affinity: which tokens appear at which positions
-        # token -> list of position counts
-        pos_affinity: dict = dc_field(default_factory=dict)
-        # Hebbian trace: co-occurrence within a window
-        # (tok_a, tok_b) -> strength
-        hebbian: dict = dc_field(default_factory=dict)
-        total: int = 0
         for k, v in input_dict.items():
             if k == 'trigram':
-                setattr(self, k, {ast.literal_eval(kk): vv for kk, vv in v.items()})
+                setattr(self, k, {
+                    ast.literal_eval(kk): { int(kk_k): vv_v for kk_k, vv_v in vv.items() }
+                    for kk, vv in v.items()
+                })
+            elif k == 'bigram':
+                setattr(self, k, {
+                    int(kk): { int(kk_k): vv_v for kk_k, vv_v in vv.items() }
+                    for kk, vv in v.items()
+                })
+            elif k == 'pos_affinity':
+                setattr(self, k, {int(kk): vv for kk, vv in v.items()})
             elif k == 'hebbian':
                 setattr(self, k, {ast.literal_eval(kk): vv for kk, vv in v.items()})
             else:
@@ -209,3 +206,89 @@ class MetaWeights:
         stub['trigram'] = {repr(k): v for k, v in self.trigram.items()}
         stub['hebbian'] = {repr(k): v for k, v in self.hebbian.items()}
         return stub
+
+    def generate(self, prompt_ids, max_tokens=128, temperature=0.85):
+        """
+        Meta-generation: pure metaweight generation without transformer forward pass.
+        Uses only the statistical probability space from BPE tokenization.
+
+        This follows the Haze/Leo pattern:
+        - Trigram first (most coherent), fallback to bigram, then unigram
+        - Sample ONLY from tokens that actually appear in the statistics
+        - Repetition penalty for loop avoidance
+        - Top-k filtering (keep top 15 candidates like Leo)
+        """
+
+        generated = list(prompt_ids)
+
+        for _ in range(max_tokens):
+            last = generated[-1]
+            candidates = {}  # token_id -> count (sparse, only real candidates)
+
+            # Try trigram first (strongest signal, like Haze)
+            if len(generated) >= 2:
+                key = (generated[-2], generated[-1])
+                if key in self.trigram:
+                    candidates = dict(self.trigram[key])
+
+            # Fallback to bigram
+            if not candidates and last in self.bigram:
+                candidates = dict(self.bigram[last])
+
+            # Fallback to unigram (last resort)
+            if not candidates:
+                for i in range(self.vocab_size):
+                    if self.unigram[i] > 1e-8:
+                        candidates[i] = self.unigram[i]
+
+            if not candidates:
+                break
+
+            # Hebbian boost — contextual reinforcement on top of trigram/bigram
+            ctx = generated[-4:]
+            for tok in list(candidates.keys()):
+                for ct in ctx:
+                    key = (min(tok, ct), max(tok, ct))
+                    if key in self.hebbian:
+                        candidates[tok] *= (1.0 + 0.3 * self.hebbian[key])
+
+            # Repetition penalty (Leo-style: penalize recently seen tokens)
+            recent = generated[-12:] if len(generated) >= 12 else generated
+            recent_counts = {}
+            for t in recent:
+                recent_counts[t] = recent_counts.get(t, 0) + 1
+            for tok in list(candidates.keys()):
+                if tok in recent_counts:
+                    freq = recent_counts[tok]
+                    penalty = 1.0 / (1.0 + 0.5 * freq)
+                    candidates[tok] *= penalty
+
+            # Top-k filtering (keep top 15, like Leo)
+            top_k = 15
+            sorted_cands = sorted(candidates.items(), key=lambda x: -x[1])
+            sorted_cands = sorted_cands[:top_k]
+
+            # Convert to probabilities with temperature
+            tokens = [t for t, _ in sorted_cands]
+            counts = [c for _, c in sorted_cands]
+
+            # Log-space temperature scaling (like Haze SubwordField)
+            log_counts = [math.log(c + 1e-10) / temperature for c in counts]
+            max_lc = max(log_counts)
+            exps = [math.exp(lc - max_lc) for lc in log_counts]
+            total = sum(exps)
+            probs = [e / total for e in exps]
+
+            # Sample
+            r = random.random()
+            cum = 0.0
+            chosen = tokens[0]
+            for tok, p in zip(tokens, probs):
+                cum += p
+                if cum > r:
+                    chosen = tok
+                    break
+
+            generated.append(chosen)
+
+        return generated

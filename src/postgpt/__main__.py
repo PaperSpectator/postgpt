@@ -50,7 +50,7 @@ from .implementations import PostGPT
 # ─────────────────────────────────────────────────────────────────────────────
 from . import DEFAULT_ENGINE_CONFIG
 
-def load_engine(corpus_path=None, tokenizer_path=None, engine_config=None, context_len=64, metaweights_window=4):
+def load_engine(corpus_path=None, tokenizer_path=None, engine_config=None, context_len=64, metaweights_window=4, metaweights_path=None):
     """Load corpus, learn BPE, build metaweights, init model. Returns (tokenizer, meta, model)."""
     if corpus_path is None:
         corpus_path = pathlib.Path(__file__).absolute().parent.parent.parent / 'postgpt.txt'
@@ -118,11 +118,18 @@ def load_engine(corpus_path=None, tokenizer_path=None, engine_config=None, conte
 
     # Step 3: Build metaweights from tokenized corpus
     print("\n[3] Building metaweight probability space...")
-    meta = MetaWeights(vocab_size, context_len=context_len)
-    meta.build(token_ids, window=metaweights_window)
-    mw_json = corpus_path.with_suffix('.mw.json')
-    with open(mw_json, 'w', encoding='utf-8') as mw_f:
-        json.dump(meta.todict(), mw_f, indent=4)
+    meta = None
+    if os.path.exists(metaweights_path):
+        with open(metaweights_path, 'rb') as f:
+            mw_weights = json.load(f)
+            meta = MetaWeights(vocab_size, context_len=context_len)
+            meta.fromdict(mw_weights)
+    else:
+        meta = MetaWeights(vocab_size, context_len=context_len)
+        meta.build(token_ids, window=metaweights_window)
+        mw_json = corpus_path.with_suffix('.mw.json')
+        with open(mw_json, 'w', encoding='utf-8') as mw_f:
+            json.dump(meta.todict(), mw_f, indent=4)
 
     # Step 4: Initialize dual-attention transformer
     print("\n[4] Initializing PostGPT transformer...")
@@ -158,8 +165,7 @@ def continue_phrase(prompt, tokenizer, meta, model, max_tokens=120, temperature=
         prompt_ids = prompt_ids.ids
 
     if mode == 'meta':
-        generated = model.generate_meta(prompt_ids, max_tokens=max_tokens,
-                                         meta=meta, temperature=temperature)
+        generated = meta.generate(prompt_ids, max_tokens=max_tokens, temperature=temperature)
     else:
         generated = model.generate(prompt_ids, max_tokens=max_tokens,
                                     meta=meta, temperature=temperature)
@@ -173,6 +179,7 @@ def main():
     argsp.add_argument('-t', '--tokenizer', help="Talk with non-dynamic tokenizer", default=None)
     argsp.add_argument('-e', '--engine', help="Load engine parameters from a JSON file", default=None)
     argsp.add_argument('-c', '--context-len', help="Set the context size", default=64, type=int)
+    argsp.add_argument('--metaweights-file', help="Load metaweights directly from a file", default=None)
     argsp.add_argument('-w', '--metaweights-window', help="Set the metaweights window", default=4, type=int)
     argsp.add_argument('-m', '--continuation-mode', default='both', help="The type of continuation to use", choices=('both', 'meta', 'full'))
     argsp.add_argument('--seed', default=42, help="Seed for generation")
@@ -194,7 +201,8 @@ def main():
         'tokenizer_path': args.tokenizer,
         'engine_config': engine_config,
         'context_len': args.context_len,
-        'metaweights_window': args.metaweights_window
+        'metaweights_window': args.metaweights_window,
+        'metaweights_path': args.metaweights_file,
     }
     tokenizer, meta, model = load_engine(args.file, **loader_args)
     if tokenizer is None:
