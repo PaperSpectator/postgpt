@@ -1,5 +1,8 @@
 [default]
-all: organisms
+all: organisms ariannamethod
 
 organisms:
     just organisms/
+
+ariannamethod:
+    just ariannamethod/

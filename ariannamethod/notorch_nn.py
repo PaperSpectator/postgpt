@@ -22,7 +22,9 @@ Usage:
 """
 
 import ctypes
+import ctypes.util
 import os
+import sys
 import math
 import struct
 import random
@@ -112,7 +114,13 @@ _sig('nt_seq_cross_entropy', _I, _I, _I, _I, _I)
 _sig('nt_save', _I, ctypes.c_char_p, ctypes.POINTER(_V), _I)
 _sig('nt_load', ctypes.POINTER(_V), ctypes.c_char_p, ctypes.POINTER(_I))
 
-_libc = ctypes.CDLL(None)
+def find_libc():
+    if sys.platform == 'win32':
+        return ctypes.CDLL(ctypes.util.find_msvcrt())
+    else:
+        return ctypes.CDLL(ctypes.util.find_library("c"))
+
+_libc = find_libc()
 _libc.free.argtypes = [_V]
 _libc.free.restype = None
 

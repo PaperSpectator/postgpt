@@ -1,0 +1,7 @@
+ext := if os() == "windows" { "dll" } else if os() == "macos" { "dylib" } else { "so" }
+prefix := if os() == "windows" { "" } else { "lib" }
+
+lib_name := prefix + "libnotorch." + ext
+
+libnotorch:
+    gcc -O2 -std=c11 -shared -fPIC -o {{lib_name}} notorch.c -lm

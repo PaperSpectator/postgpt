@@ -2,6 +2,9 @@
 // Extracted from ariannamethod.ai/core/ (Arianna Method)
 // Copyright (C) 2026 Oleg Ataeff & Arianna Method contributors
 // SPDX-License-Identifier: LGPL-3.0-or-later
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 #include "notorch.h"
 #include <stdio.h>
@@ -290,6 +293,9 @@ void nt_tape_clear(void) {
             nt_tensor_free(g_tape.entries[i].grad);
             g_tape.entries[i].grad = NULL;
         }
+        /* Reset frozen flag — defense-in-depth so reused slots can't leak
+         * frozen=1 from prior session into ops that don't init it explicitly. */
+        g_tape.entries[i].frozen = 0;
     }
     g_tape.count = 0;
     g_tape.active = 0;
@@ -334,6 +340,7 @@ int nt_tape_record(nt_tensor* output, int op, int p1, int p2, float aux) {
     e->aux2 = 0;
     e->is_param = 0;
     e->no_decay = 0;
+    e->frozen = 0;  /* clear leftover from prior tape session sharing this slot */
     g_tape.count++;
     return idx;
 }
@@ -353,6 +360,7 @@ int nt_tape_record3(nt_tensor* output, int op, int p1, int p2, int p3, float aux
     e->aux2 = aux2;
     e->is_param = 0;
     e->no_decay = 0;
+    e->frozen = 0;  /* clear leftover from prior tape session sharing this slot */
     g_tape.count++;
     return idx;
 }
@@ -374,6 +382,7 @@ int nt_tape_record4(nt_tensor* output, int op, int p1, int p2, int p3, float aux
     e->aux4 = aux4;
     e->is_param = 0;
     e->no_decay = 0;
+    e->frozen = 0;  /* clear leftover from prior tape session sharing this slot */
     g_tape.count++;
     return idx;
 }
@@ -392,6 +401,7 @@ int nt_tape_param(nt_tensor* param) {
     e->aux = 0;
     e->aux2 = 0;
     e->is_param = 1;
+    e->frozen = 0;  /* clear leftover from prior tape session sharing this slot */
     e->no_decay = 0;
     e->frozen = 0;       // explicit reset — prevents sticky frozen flag from
                          // a previous nt_tape_param_frozen() that reused this slot.
@@ -752,6 +762,38 @@ void nt_tape_backward(int loss_idx) {
             break;
         }
 
+        case NT_OP_SEQ_GATE: {
+            /* out[t,d] = x[t,d] * g[t,gi];
+             * dx[t,d] = dout[t,d] * g[t,gi];  dg[t,gi] = Σ_d dout[t,d] * x[t,d] */
+            if (e->parent1 >= 0 && e->parent2 >= 0) {
+                nt_tape_entry* px = &g_tape.entries[e->parent1];
+                nt_tape_entry* pg = &g_tape.entries[e->parent2];
+                int T = (int)e->aux, nm = (int)e->aux2, gi = (int)e->aux3;
+                if (T <= 0 || nm <= 0 || gi < 0 || gi >= nm ||
+                    out_len % T != 0 || pg->output->len != T * nm) break;  /* shape guard */
+                int B = out_len / T;
+                nt_tensor_sync_cpu(px->output);
+                nt_tensor_sync_cpu(pg->output);
+                float* dx = (float*)calloc(out_len, sizeof(float));
+                float* dg = (float*)calloc(pg->output->len, sizeof(float));
+                if (dx && dg) {
+                    for (int t = 0; t < T; t++) {
+                        float gv = pg->output->data[t * nm + gi];
+                        float acc = 0.0f;
+                        for (int d = 0; d < B; d++) {
+                            dx[t * B + d] = dout[t * B + d] * gv;
+                            acc += dout[t * B + d] * px->output->data[t * B + d];
+                        }
+                        dg[t * nm + gi] = acc;
+                    }
+                    tape_acc_grad(e->parent1, dx, out_len);
+                    tape_acc_grad(e->parent2, dg, pg->output->len);
+                }
+                free(dx); free(dg);
+            }
+            break;
+        }
+
         case NT_OP_SCALE_BY_T: {
             /* y = a[0] * x; gx = a[0] * dout; ga = sum(dout * x) */
             if (e->parent1 >= 0 && e->parent2 >= 0) {
@@ -802,7 +844,7 @@ void nt_tape_backward(int loss_idx) {
                  * after CE 3d46007 + MUL/SILU 8ab5062): backward below reads
                  * px->output->data and gamma_data on CPU side. In GPU mode
                  * the mirror is stale → garbage gx → NaN explosion. Verified
-                 * neo 2026-05-14 on nanollama-notorch SFT: 27 RMSNorms per
+                 * 2026-05-14 on nanollama-notorch SFT: 27 RMSNorms per
                  * forward exploded at step ~40, lr=1e-4 (same shape as
                  * Resonance pre-fix lr=1e-4 step 60 explosion). */
                 nt_tensor_sync_cpu(px->output);
@@ -1247,7 +1289,7 @@ void nt_tape_backward(int loss_idx) {
                  * ds, dq, dk. Without sync, GPU-resident mirrors are stale
                  * (calloc-zero) → ds = attn * (d_attn - dot_da) * sc = 0 →
                  * dq, dk accumulate zero → wq, wk LoRA targets receive no
-                 * grad (verified neo 2026-05-14 with NT_DISABLE_MH_GPU=1).
+                 * grad (verified 2026-05-14 with NT_DISABLE_MH_GPU=1).
                  * dv survives because it uses dout, not q/k. */
                 nt_tensor_sync_cpu(pq->output);
                 nt_tensor_sync_cpu(pk->output);
@@ -1538,6 +1580,148 @@ void nt_tape_backward(int loss_idx) {
             break;
         }
 
+        case NT_OP_RRPRAM_BCAST: {
+            /* Broadcast RRPRAM backward (canonical Janus scale included).
+             * Forward: mid = Σ_t x·Wr_a (broadcast); raw_s = mid·Wr_b (per layer);
+             *          score = raw_s * sc, sc = 1/sqrt(D);
+             *          attn[i,:] = softmax_causal(score)[0..i]; out[i] = Σ attn·v.
+             * d_v[j,h,d] += Σ_i attn[i,j] · dout[i,h,d]
+             * d_attn[i,j] = Σ_d dout[i,h,d] · v[j,h,d]
+             * d_score[j] = Σ_i softmax_bwd(attn[i],d_attn[i])[j]   (only j ≤ i)
+             * d_raw_s[j] = d_score[j] * sc                          (chain rule through scale)
+             * d_mid[r] = Σ_j d_raw_s[j] · Wr_b[h,r,j]
+             * d_Wr_b[h,r,j] = mid[r] · d_raw_s[j]
+             * d_x[t,e] += Σ_r d_mid[r] · Wr_a[h,e,r]   (broadcast — same dxe added to every t)
+             * d_Wr_a[h,e,r] += Σ_t x[t,e] · d_mid[r]
+             */
+            if (e->parent1 >= 0 && e->parent2 >= 0 && e->parent3 >= 0) {
+                nt_tape_entry* pwr = &g_tape.entries[e->parent1];
+                nt_tape_entry* px  = &g_tape.entries[e->parent2];
+                nt_tape_entry* pv  = &g_tape.entries[e->parent3];
+                int T = (int)e->aux; int n_embd = (int)e->aux2;
+                int nr = (int)e->aux3;
+                int rank = (int)e->aux4;  /* aux4 = rank, head_dim = E/H */
+                int hd = n_embd / nr;
+                int out_dim = nr * hd;
+                long combined_len = pwr->output->len;
+                int ctx_T = (int)(combined_len / ((long)nr * rank) - n_embd);
+                long wra_total = (long)nr * n_embd * rank;
+                float sc = 1.0f / sqrtf((float)hd);
+
+#ifdef USE_CUDA
+                nt_tensor_ensure_cpu(pwr->output);
+                nt_tensor_ensure_cpu(px->output);
+                nt_tensor_ensure_cpu(pv->output);
+                nt_tensor_ensure_cpu(e->grad);
+#endif
+
+                float* dwr = (float*)calloc(combined_len, sizeof(float));
+                float* dx  = (float*)calloc((long)T * n_embd, sizeof(float));
+                float* dv  = (float*)calloc((long)T * out_dim, sizeof(float));
+
+                float* mid_buf       = (float*)malloc(rank * sizeof(float));
+                float* d_mid_buf     = (float*)malloc(rank * sizeof(float));
+                float* all_scores    = (float*)malloc(T  * sizeof(float));
+                float* attn_buf      = (float*)malloc(T  * sizeof(float));
+                float* d_attn_buf    = (float*)malloc(T  * sizeof(float));
+                float* d_score_global= (float*)calloc(T,   sizeof(float));
+
+                float* dout = e->grad ? e->grad->data : NULL;
+
+                if (dwr && dx && dv && mid_buf && d_mid_buf && all_scores &&
+                    attn_buf && d_attn_buf && d_score_global && dout) {
+                    for (int h = 0; h < nr; h++) {
+                        long wr_a_base = (long)h * n_embd * rank;
+                        long wr_b_base = wra_total + (long)h * rank * ctx_T;
+                        int  v_off     = h * hd;
+
+                        for (int r = 0; r < rank; r++) mid_buf[r] = 0.0f;
+                        for (int t = 0; t < T; t++) {
+                            const float* xt = px->output->data + (long)t * n_embd;
+                            for (int e2 = 0; e2 < n_embd; e2++) {
+                                float xe = xt[e2];
+                                const float* wa_row = pwr->output->data + wr_a_base + (long)e2 * rank;
+                                for (int r = 0; r < rank; r++) mid_buf[r] += xe * wa_row[r];
+                            }
+                        }
+
+                        for (int j = 0; j < T; j++) {
+                            float s = 0.0f;
+                            for (int r = 0; r < rank; r++) {
+                                s += mid_buf[r] * pwr->output->data[wr_b_base + (long)r * ctx_T + j];
+                            }
+                            all_scores[j] = s * sc;
+                        }
+
+                        for (int j = 0; j < T; j++) d_score_global[j] = 0.0f;
+
+                        for (int i = 0; i < T; i++) {
+                            float mx = -1e30f;
+                            for (int j = 0; j <= i; j++) {
+                                attn_buf[j] = all_scores[j];
+                                if (attn_buf[j] > mx) mx = attn_buf[j];
+                            }
+                            float sm = 0.0f;
+                            for (int j = 0; j <= i; j++) { attn_buf[j] = expf(attn_buf[j] - mx); sm += attn_buf[j]; }
+                            if (sm > 0.0f) for (int j = 0; j <= i; j++) attn_buf[j] /= sm;
+
+                            const float* dout_i = dout + (long)i * out_dim + v_off;
+
+                            for (int j = 0; j <= i; j++) d_attn_buf[j] = 0.0f;
+                            for (int j = 0; j <= i; j++) {
+                                const float* vj = pv->output->data + (long)j * out_dim + v_off;
+                                float* dvj      = dv + (long)j * out_dim + v_off;
+                                for (int d = 0; d < hd; d++) {
+                                    d_attn_buf[j] += dout_i[d] * vj[d];
+                                    dvj[d]        += attn_buf[j] * dout_i[d];
+                                }
+                            }
+
+                            float dot_da = 0.0f;
+                            for (int j = 0; j <= i; j++) dot_da += d_attn_buf[j] * attn_buf[j];
+                            for (int j = 0; j <= i; j++) {
+                                d_score_global[j] += attn_buf[j] * (d_attn_buf[j] - dot_da);
+                            }
+                        }
+
+                        for (int r = 0; r < rank; r++) d_mid_buf[r] = 0.0f;
+                        for (int j = 0; j < T; j++) {
+                            /* Chain rule through forward scale: d_raw_s[j] = d_score[j] * sc. */
+                            float ds = d_score_global[j] * sc;
+                            if (ds == 0.0f) continue;
+                            for (int r = 0; r < rank; r++) {
+                                d_mid_buf[r] += ds * pwr->output->data[wr_b_base + (long)r * ctx_T + j];
+                                dwr[wr_b_base + (long)r * ctx_T + j] += ds * mid_buf[r];
+                            }
+                        }
+
+                        for (int t = 0; t < T; t++) {
+                            const float* xt = px->output->data + (long)t * n_embd;
+                            float* dxt = dx + (long)t * n_embd;
+                            for (int e2 = 0; e2 < n_embd; e2++) {
+                                const float* wa_row = pwr->output->data + wr_a_base + (long)e2 * rank;
+                                float* dwa_row     = dwr + wr_a_base + (long)e2 * rank;
+                                float dxe = 0.0f;
+                                float xe  = xt[e2];
+                                for (int r = 0; r < rank; r++) {
+                                    dxe         += d_mid_buf[r] * wa_row[r];
+                                    dwa_row[r]  += d_mid_buf[r] * xe;
+                                }
+                                dxt[e2] += dxe;
+                            }
+                        }
+                    }
+                    tape_acc_grad(e->parent1, dwr, combined_len);
+                    tape_acc_grad(e->parent2, dx,  (long)T * n_embd);
+                    tape_acc_grad(e->parent3, dv,  (long)T * out_dim);
+                }
+                free(dwr); free(dx); free(dv);
+                free(mid_buf); free(d_mid_buf); free(all_scores);
+                free(attn_buf); free(d_attn_buf); free(d_score_global);
+            }
+            break;
+        }
+
         case NT_OP_RRPRAM_ATTN: {
             if (e->parent1 >= 0 && e->parent2 >= 0 && e->parent3 >= 0) {
                 nt_tape_entry* pwr = &g_tape.entries[e->parent1];
@@ -1763,7 +1947,7 @@ void nt_tape_backward(int loss_idx) {
                  * dl computed via softmax(stale_logits) - target produces a
                  * gradient pointing at the wrong direction → feeds garbage up
                  * 13 layers → Chuck oscillates → NaN at step 40-220 regardless
-                 * of LoRA scale. Verified neo 2026-05-14 nanollama-notorch SFT.
+                 * of LoRA scale. Verified 2026-05-14 nanollama-notorch SFT.
                  * Matches Olego «не из-за оптимайзера» and Intel POST_SFT note
                  * that lr=1e-5/3e-5 plateau is lr-independent (= zero/garbage
                  * grad somewhere upstream). */
@@ -3201,6 +3385,29 @@ int nt_relu(int x_idx) {
     return idx;
 }
 
+int nt_seq_gate(int x_idx, int g_idx, int T, int nm, int gi) {
+    if (x_idx < 0 || g_idx < 0 || T <= 0 || nm <= 0 || gi < 0 || gi >= nm) return -1;
+    nt_tape_entry* px = &g_tape.entries[x_idx];
+    nt_tape_entry* pg = &g_tape.entries[g_idx];
+    int n = px->output->len;
+    if (n % T != 0 || pg->output->len != T * nm) return -1;  /* shape guard: fail fast */
+    int B = n / T;
+    nt_tensor* out = nt_tensor_new(n);
+    if (!out) return -1;
+    /* parents may be GPU-resident with stale CPU mirrors — sync before read. */
+    nt_tensor_sync_cpu(px->output);
+    nt_tensor_sync_cpu(pg->output);
+    for (int t = 0; t < T; t++) {
+        float gv = pg->output->data[t * nm + gi];
+        for (int d = 0; d < B; d++)
+            out->data[t * B + d] = px->output->data[t * B + d] * gv;
+    }
+    int idx = nt_tape_record4(out, NT_OP_SEQ_GATE, x_idx, g_idx, -1,
+                              (float)T, (float)nm, (float)gi, 0.0f);
+    nt_tensor_free(out);
+    return idx;
+}
+
 int nt_scale_by_t(int x_idx, int a_idx) {
     if (x_idx < 0 || a_idx < 0) return -1;
     nt_tape_entry* px = &g_tape.entries[x_idx];
@@ -3578,6 +3785,110 @@ int nt_rrpram_lowrank_attention(int wr_combined_idx, int x_idx, int v_idx,
 
     int idx = nt_tape_record4(out, NT_OP_RRPRAM_LR, wr_combined_idx, x_idx, v_idx,
                               (float)T, (float)n_embd, (float)nr_heads, (float)head_dim);
+    nt_tensor_free(out);
+    return idx;
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+ * nt_rrpram_broadcast_attention
+ *
+ * Canonical Janus broadcast pattern (per dario/infer_v4.c:218-249).
+ *
+ *   mid[h, r]   = Σ_t Σ_e x[t, e] · Wr_a[h, e, r]                  (one mid per head, layer-broadcast)
+ *   score[h, j] = Σ_r mid[h, r] · Wr_b[h, r, j]                    (one set of scores, broadcast across i)
+ *   attn[h,i,j] = softmax(scores[h])[0..i] for j ≤ i               (causal softmax per i)
+ *   out[i, h_off+d] = Σ_{j≤i} attn[h, i, j] · v[j, h_off+d]
+ * ════════════════════════════════════════════════════════════════════════ */
+int nt_rrpram_broadcast_attention(int wr_combined_idx, int x_idx, int v_idx,
+                                   int T, int n_embd, int nr_heads, int head_dim, int rank) {
+    if (wr_combined_idx < 0 || x_idx < 0 || v_idx < 0) return -1;
+    if (rank < 1 || nr_heads < 1 || head_dim < 1 || n_embd < 1) return -1;
+    if (nr_heads * head_dim != n_embd) return -1;  /* invariant: H*D=E */
+    int out_dim = nr_heads * head_dim;
+    nt_tensor* out = nt_tensor_new(T * out_dim);
+    if (!out) return -1;
+    nt_tape_entry* pwr = &g_tape.entries[wr_combined_idx];
+    nt_tape_entry* px  = &g_tape.entries[x_idx];
+    nt_tape_entry* pv  = &g_tape.entries[v_idx];
+
+    /* Packed weight shape: H*E*R + H*R*ctx_T = H*R*(E+ctx_T).
+     * Derive ctx_T from combined_len / (H*R) - E (rank passed by caller). */
+    long combined_len = pwr->output->len;
+    long expected_per_head = (long)rank * (n_embd + 0);
+    int ctx_T = (int)(combined_len / ((long)nr_heads * rank) - n_embd);
+    if (ctx_T < T) { nt_tensor_free(out); return -1; }  /* runtime T must fit ctx */
+    if ((long)nr_heads * rank * ((long)n_embd + ctx_T) != combined_len) {
+        nt_tensor_free(out); return -1;  /* shape mismatch */
+    }
+    (void)expected_per_head;
+    long wra_total = (long)nr_heads * n_embd * rank;
+    /* Canonical Janus attention scale: 1/sqrt(D) per dario/infer_v4.c:239-244 */
+    float sc = 1.0f / sqrtf((float)head_dim);
+
+#ifdef USE_CUDA
+    nt_tensor_ensure_cpu(pwr->output);
+    nt_tensor_ensure_cpu(px->output);
+    nt_tensor_ensure_cpu(pv->output);
+#endif
+
+    float* mid_buf    = (float*)malloc(rank * sizeof(float));
+    float* all_scores = (float*)malloc(T  * sizeof(float));
+    float* attn_buf   = (float*)malloc(T  * sizeof(float));
+    if (!mid_buf || !all_scores || !attn_buf) {
+        free(mid_buf); free(all_scores); free(attn_buf); nt_tensor_free(out); return -1;
+    }
+
+    for (int h = 0; h < nr_heads; h++) {
+        long wr_a_base = (long)h * n_embd * rank;
+        long wr_b_base = wra_total + (long)h * rank * ctx_T;
+        int  v_off     = h * head_dim;
+
+        for (int r = 0; r < rank; r++) mid_buf[r] = 0.0f;
+        for (int t = 0; t < T; t++) {
+            const float* xt = px->output->data + (long)t * n_embd;
+            for (int e = 0; e < n_embd; e++) {
+                float xe = xt[e];
+                const float* wa_row = pwr->output->data + wr_a_base + (long)e * rank;
+                for (int r = 0; r < rank; r++) mid_buf[r] += xe * wa_row[r];
+            }
+        }
+
+        for (int j = 0; j < T; j++) {
+            float s = 0.0f;
+            for (int r = 0; r < rank; r++) {
+                s += mid_buf[r] * pwr->output->data[wr_b_base + (long)r * ctx_T + j];
+            }
+            all_scores[j] = s * sc;
+        }
+
+        for (int i = 0; i < T; i++) {
+            float mx = -1e30f;
+            for (int j = 0; j <= i; j++) {
+                attn_buf[j] = all_scores[j];
+                if (attn_buf[j] > mx) mx = attn_buf[j];
+            }
+            float sm = 0.0f;
+            for (int j = 0; j <= i; j++) {
+                attn_buf[j] = expf(attn_buf[j] - mx);
+                sm += attn_buf[j];
+            }
+            if (sm > 0.0f) for (int j = 0; j <= i; j++) attn_buf[j] /= sm;
+
+            float* oi = out->data + (long)i * out_dim + v_off;
+            for (int d = 0; d < head_dim; d++) oi[d] = 0.0f;
+            for (int j = 0; j <= i; j++) {
+                const float* vj = pv->output->data + (long)j * out_dim + v_off;
+                for (int d = 0; d < head_dim; d++) oi[d] += attn_buf[j] * vj[d];
+            }
+        }
+    }
+
+    free(mid_buf); free(all_scores); free(attn_buf);
+
+    /* aux4 stores RANK (not head_dim) — head_dim derivable at backward as E/H.
+     * ctx_T is derivable from combined_len / (H*rank) - n_embd. */
+    int idx = nt_tape_record4(out, NT_OP_RRPRAM_BCAST, wr_combined_idx, x_idx, v_idx,
+                              (float)T, (float)n_embd, (float)nr_heads, (float)rank);
     nt_tensor_free(out);
     return idx;
 }
@@ -4906,7 +5217,11 @@ int nt_qmatvec(float *out, const uint8_t *Wq, int dtype,
     nt_qrows_fn fn = nt_qrows_for(dtype, k);
     if (!fn) return -1;
 
+    #ifdef _WIN32
+    int nt = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+    #else
     int nt = (int)sysconf(_SC_NPROCESSORS_ONLN);
+    #endif
     if (nt < 1) nt = 1;
     if (nt > NT_QMV_MAX_THREADS) nt = NT_QMV_MAX_THREADS;
     if (nt > m) nt = m;
