@@ -15,7 +15,7 @@
 #include <string>
 #include <span>
 
-#include "BPETokenizer.hpp"
+#include "RawBPETokenizer.hpp"
 #include "metaweights.hpp"
 #include "CLI11.hpp"
 
@@ -23,10 +23,10 @@ using namespace std;
 
 int main(int argc, char **argv)
 {
-    BPETokenizer tokenizer;
+    RawBPETokenizer tokenizer;
     CLI::App app("metaspeaker");
     string corpus_path = "postgpt.txt";
-    string bpe_path    = "metaspeaker.model";
+    string raw_bpe_path    = "metaspeaker.model";
     string prompt = "What is the meaning of you?";
     size_t context_len    = DEFAULT_CONTEXT_LEN;
     uint32_t vocab_size   = DEFAULT_VOCAB_SIZE;
@@ -34,7 +34,7 @@ int main(int argc, char **argv)
     app.add_option("--file", corpus_path, "The path to initialize the metaweights");
     app.add_option("--prompt", prompt, "The question you want to ask the metaspeaker");
     app.add_flag("--train,!--no-train", train, "Enable/disable BPE training before speaking");
-    app.add_option("--bpe", bpe_path, "BPE to load");
+    app.add_option("--raw-bpe", raw_bpe_path, "BPE to load");
     app.add_option("--context-len", context_len, "Context length");
     app.add_option("--vocab-size", vocab_size, "Vocab size");
     CLI11_PARSE(app, argc, argv);
@@ -46,9 +46,9 @@ int main(int argc, char **argv)
 
     if (train) {
         tokenizer.learn(full_content);
-        tokenizer.save(bpe_path);
+        tokenizer.save(raw_bpe_path);
     } else {
-        tokenizer.load(bpe_path);
+        tokenizer.load(raw_bpe_path);
     }
     //tokenizer.load_merges(merges_path);
     vector<uint32_t> tokens(tokenizer.encode(full_content));

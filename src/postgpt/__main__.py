@@ -23,7 +23,7 @@ import json
 #    the tokenizer IS the training. everything after this is just theater.
 # ─────────────────────────────────────────────────────────────────────────────
 # Moved to ./py_tokenizers.py since we plan to study other tokenizers
-from .py_tokenizers import BPETokenizer
+from .raw_bpe import RawBPETokenizer
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -94,12 +94,13 @@ def load_engine(corpus_path=None, tokenizer_path=None, engine_config=None, conte
             case _:
                 print("Loading tokenizer from HuggingFace")
                 from tokenizers import Tokenizer
-                tokenizer  = Tokenizer.from_pretrained(tokenizer_path)
+                print(tokenizer_path_raw)
+                tokenizer  = Tokenizer.from_pretrained(tokenizer_path_raw)
                 vocab_size = tokenizer.get_vocab_size()
                 token_ids  = tokenizer.encode(raw_data.decode('utf-8')).ids
 
     else:
-        tokenizer = BPETokenizer(max_merges=1024)
+        tokenizer = RawBPETokenizer(max_merges=1024)
         #merges_path = corpus_path.replace('.txt', '.merges')
         merges_path = corpus_path.with_suffix('.merges')
         if os.path.exists(merges_path):

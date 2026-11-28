@@ -2,7 +2,7 @@
 import struct
 import time
 
-class BPETokenizer:
+class RawBPETokenizer:
     """Byte-Pair Encoding tokenizer. Starts with 256 byte tokens, learns merges."""
 
     def __init__(self, max_merges=1792):

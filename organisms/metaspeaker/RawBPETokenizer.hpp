@@ -21,7 +21,7 @@
 using nlohmann::json;
 using namespace std;
 
-class BPETokenizer {
+class RawBPETokenizer {
     public:
         size_t max_merges;
         uint32_t vocab_size;
@@ -29,7 +29,7 @@ class BPETokenizer {
         vector<trigram_key_t> merges;
         map<uint32_t, string> vocab;
         map<string, uint32_t> str_to_id;
-        BPETokenizer(size_t max_merges=1792) {
+        RawBPETokenizer(size_t max_merges=1792) {
             this->max_merges = max_merges;
             for (uint32_t i = 0; i < 256; i++) {
                 this->vocab[i] = { (char)i };
@@ -81,6 +81,7 @@ class BPETokenizer {
                 // TODO: support regex later
                 //vector<string> substrs;
                 // actually save preprocessors for later
+                // source from ."pretokenizers" later
                 string pattern = "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+";
                 srell::regex re(pattern);
                 srell::smatch match;
@@ -117,6 +118,8 @@ class BPETokenizer {
             ostringstream ss;
             // TODO: with deprioritize_merges, output has no spaces
             for (auto token : tokens) {
+                // TODO: support decoder settings later
+                // should be derived from ."decoder"."add_prefix_space"
                 ss << this->vocab[token];
             }
             return ss.str();
