@@ -13,6 +13,7 @@
 #include <vector>
 #include <string>
 #include <variant>
+#include <fstream>
 
 #include "srell.hpp"
 #include "json.hpp"
@@ -116,10 +117,7 @@ class RawBPETokenizer {
         }
         string decode(vector<uint32_t> tokens) {
             ostringstream ss;
-            // TODO: with deprioritize_merges, output has no spaces
             for (auto token : tokens) {
-                // TODO: support decoder settings later
-                // should be derived from ."decoder"."add_prefix_space"
                 ss << this->vocab[token];
             }
             return ss.str();
@@ -128,7 +126,6 @@ class RawBPETokenizer {
             cout << "Loading existing BPE...\n";
             ifstream f(path);
             json data = json::parse(f);
-            // TODO: doesn't apply pretokenizers yet
             this->vocab.clear();
             this->str_to_id.clear();
             for (const auto& [key, val]: data["model"]["vocab"].items()) {
@@ -159,6 +156,30 @@ class RawBPETokenizer {
             return;
         }
         void save(string path) {
+            cout << "Saving BPE knowledge...\n";
+            json config = {
+                {"model", {
+                    {"type", "RawBPE"},
+                    {"vocab", json::object()},
+                    {"merges", json::array()},
+                }},
+                {"decoder", {
+                    {"type", "RawBytes"},
+                }}
+            };
+            ofstream out(path);
+            for (const auto& key : std::views::keys(this->str_to_id)) {
+                config["model"]["vocab"][key] = this->str_to_id[key];
+            }
+            for (trigram_key_t merge: this->merges) {
+                auto tok1 = this->vocab[get<0>(merge)];
+                auto tok2 = this->vocab[get<1>(merge)];
+                json tok_pair = json::array();
+                tok_pair.push_back(tok1);
+                tok_pair.push_back(tok2);
+                config["model"]["merges"].push_back(tok_pair);
+            }
+            out << config.dump(4) << "\n";
             return;
         }
     private:

@@ -26,7 +26,7 @@ int main(int argc, char **argv)
     RawBPETokenizer tokenizer;
     CLI::App app("metaspeaker");
     string corpus_path = "postgpt.txt";
-    string raw_bpe_path    = "metaspeaker.model";
+    string raw_bpe_path    = "postgpt.tokenizer.json";
     string prompt = "What is the meaning of you?";
     size_t context_len    = DEFAULT_CONTEXT_LEN;
     uint32_t vocab_size   = DEFAULT_VOCAB_SIZE;
@@ -46,7 +46,7 @@ int main(int argc, char **argv)
 
     if (train) {
         tokenizer.learn(full_content);
-        tokenizer.save(raw_bpe_path);
+        //tokenizer.save(raw_bpe_path);
     } else {
         tokenizer.load(raw_bpe_path);
     }
