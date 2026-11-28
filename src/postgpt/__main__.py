@@ -70,13 +70,14 @@ def load_engine(corpus_path=None, tokenizer_path=None, engine_config=None, conte
     # Step 2: BPE tokenization — load saved merges if they exist
     print("\n[2] BPE tokenizer...")
     if tokenizer_path:
+        tokenizer_path_raw = tokenizer_path
         tokenizer_path = pathlib.Path(tokenizer_path)
         match tokenizer_path.suffix:
             case '.merges':
                 print("Loading tokenizer from .merges bin")
                 if not os.path.exists(tokenizer_path):
                     raise ValueError("Tokenizer must exist!")
-                tokenizer = BPETokenizer(max_merges=1024)
+                tokenizer = RawBPETokenizer(max_merges=1024)
                 tokenizer.load(tokenizer_path)
                 vocab_size = tokenizer.vocab_size
                 token_ids = tokenizer.encode(raw_data)
