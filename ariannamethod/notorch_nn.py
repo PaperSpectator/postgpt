@@ -433,10 +433,11 @@ class NotorchEngine:
                 for i, tensor in enumerate(self.params):
                     tensor.set_data(Tensor(pending_tensors[i], owns=False).get_data())
             finally:
+                #import pdb; pdb.set_trace()
                 for i in range(n_loaded.value):
                     if pending_tensors[i]:
                         _lib.nt_tensor_free(pending_tensors[i])
-                _libc.free(ctypes.cast(pending_tensors, _V))
+                #_libc.free(ctypes.cast(pending_tensors, _V))
 
 
 def seed(s):
