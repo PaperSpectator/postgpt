@@ -1,3 +1,20 @@
-all: metaspeaker
+all: _prep metaspeaker postgpt pro golem
+
+_prep:
+    mkdir -vp bin
+
+# specimens from self
+
 metaspeaker:
-    g++ -g -o metaspeaker ./metaspeaker/main.cpp -Wextra -Wpedantic -Wconversion
+    g++ -g -o bin/metaspeaker ./metaspeaker/main.cpp -Wextra -Wpedantic -Wconversion
+ 
+# Original ariannamethod specimens
+postgpt:
+    gcc -O2 -o bin/postgpt postgpt.c -lm
+
+pro:
+    # Windows does not run pro.exe without the increased stack
+    gcc -O2 -o bin/pro postgpt-pro.c -lm -Wl,--stack,8388608
+golem:
+    # Windows does not run pro.exe without the increased stack
+    gcc -O2 -o bin/golem golem.c -lm -Wl,--stack,8388608
